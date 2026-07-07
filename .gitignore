@@ -12,3 +12,6 @@ deploy-failure-*.log
 
 # Real ansible inventory (has live host IPs). Keep inventory.example in git.
 ansible/inventory
+
+# SOPS age private key (never commit — lives only on the VPS and dev machine)
+/keys/
