@@ -2,8 +2,8 @@
 // spin up a new repo from the template and the navbar, footer, and document
 // title all update together.
 export const SITE = {
-  name: "Template",
-  description: "A clean, ready-to-demo starting point.",
+  name: "Vision Template",
+  description: "Vision Template test.",
 } as const;
 
 // Top navigation links. Add routes in app/routes.ts and list them here.
