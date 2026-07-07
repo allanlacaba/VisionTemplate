@@ -62,30 +62,60 @@ Create the keypair on your laptop, **add the public key to the VPS**
 (`~/.ssh/authorized_keys` for `SSH_USER`), and paste the **private** key as
 `SSH_KEY`.
 
-## 3. Push-to-deploy + auto-rollback
+## 3. CI: verify → build → deploy (with auto-rollback)
 
-Now any push to `main` triggers `.github/workflows/deploy.yml`, which:
+`.github/workflows/ci.yml` is one pipeline with three jobs:
 
-1. SSHs into the VPS,
-2. `git fetch` + `git reset --hard origin/main`,
-3. runs `scripts/deploy.sh`:
+1. **verify** (every push & PR): `npm ci`, `npm run typecheck`, `npm run build`.
+   Fast quality gate — this is the status check you require on PRs.
+2. **build-image** (main only): builds the Dockerfile **on the GitHub runner**
+   (7GB RAM, so the 512MB VPS never builds) and pushes
+   `ghcr.io/<owner>/visiontemplate:<sha>` + `:latest` to the GitHub Container
+   Registry, authenticating with the workflow's built-in `GITHUB_TOKEN`
+   (`permissions: packages: write`). No extra secret needed to push.
+3. **deploy** (main only): SSHs into the VPS, pulls the repo, exports
+   `IMAGE_TAG=<sha>`, and runs `scripts/deploy.sh`:
 
-   - Builds `visiontemplate-app:git-<sha>`.
+   - `docker compose pull app` — pulls the image CI just pushed.
    - Recreates **only** the `app` container (`db` keeps running).
-   - Waits up to 90s for the Docker healthcheck (`GET /api/ping`) to pass.
-   - On success: records the new sha in `.deploy-state` and prunes dangling images.
-   - **On failure: rolls back** to the tag stored in `.deploy-state`, verifies it
-     goes healthy again, and saves the failed container's logs to
-     `deploy-failure-git-<sha>.log`.
+   - Waits up to 90s for the Docker healthcheck (`GET /api/ping`).
+   - On success: records the sha in `.deploy-state`.
+   - **On failure: rolls back** — re-pulls the previous tag from GHCR and
+     recreates it — then saves failed logs to `deploy-failure-<sha>.log`.
 
-Because of `concurrency: { cancel-in-progress: false }`, concurrent pushes queue
-rather than racing a deploy against its own rollback.
+`concurrency: { cancel-in-progress: false }` means new pushes queue rather than
+interrupt a deploy mid-recreate/rollback.
 
-> Rollback needs a *previous* good build to return to. The very first deploy has
-> nothing to roll back to, so do the first deploy via step 1 (or accept the first
-> Actions run has no rollback safety net).
+> The very first deploy has no previous tag to roll back to, so if it fails the
+> app stays down. For the first run you can pull/start manually on the VPS to
+> watch the logs: `IMAGE_TAG=<sha> docker compose pull app && docker compose up -d app`.
 
-## 4. Daily Postgres backups
+### GHCR package visibility
+
+The pushed package is **private by default**. After the first `build-image` run,
+either:
+
+- **make it public** (simplest, fine for a template): your profile → Packages →
+  the package → *Package settings* → *Danger Zone* → *Change visibility*; or
+- for a **private** package, log the VPS in once as the deploy user so it can pull:
+  ```bash
+  ssh deploy@<host> 'echo <PAT-with-read:packages> | docker login ghcr.io -u <user> --password-stdin'
+  ```
+  (creds cache in `~/.docker/config.json`).
+
+## 4. Branch protection (recommended)
+
+So nothing reaches `main` (and thus deploys) without passing CI:
+
+1. **Settings → Branches → Add branch protection rule**, pattern `main`.
+2. **Require status checks to pass** → require **`CI / typecheck & build`** (the
+   `verify` job), and require branches to be up to date before merging.
+3. **Require a pull request before merging** (≥1 review, optional).
+4. (optional) Require linear history; do not allow bypasses.
+
+With this on, deploys happen on **merge to main**, not direct push.
+
+## 5. Daily Postgres backups
 
 `.github/workflows/backup.yml` runs daily at **04:17 UTC** and calls
 `scripts/backup-db.sh`, which:
@@ -110,7 +140,7 @@ Or copy one off the server:
 docker compose cp db:/backups/vision_template-<ts>.sql.gz ./
 ```
 
-## 5. Useful commands on the VPS
+## 6. Useful commands on the VPS
 
 ```bash
 cd /srv/visiontemplate
@@ -132,7 +162,7 @@ docker compose logs -f db
 docker compose exec db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
 ```
 
-## 6. Variables
+## 7. Variables
 
 | Variable | Default | Used by |
 | --- | --- | --- |
@@ -142,6 +172,7 @@ docker compose exec db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
 | `DATABASE_URL` | `postgresql://vision:visionpass@db:5432/vision_template` | app |
 | `PORT` | `3000` | app (inside container) |
 | `APP_PORT` | `3000` | host port published |
-| `IMAGE_TAG` | `git-<sha>` | which image `deploy.sh` builds/runs |
+| `IMAGE` | `ghcr.io/allanlacaba/visiontemplate` | app image registry path |
+| `IMAGE_TAG` | `<sha>` from CI | which tag `deploy.sh` pulls/runs |
 | `BACKUP_KEEP` | `14` | backup retention in days |
 | `HEALTH_TIMEOUT` | `90` | seconds before a deploy is considered failed |
