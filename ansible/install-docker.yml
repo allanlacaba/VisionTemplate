@@ -136,6 +136,23 @@
         append: true
       loop: "{{ docker_users }}"
 
+    # ---- SOPS + age (secret encryption for .env via secrets.enc.env) ----
+    - name: Install age encryption tool
+      ansible.builtin.apt:
+        name: age
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install latest sops binary
+      ansible.builtin.shell: |
+        set -e
+        V=$(curl -fsSL https://api.github.com/repos/getsops/sops/releases/latest | grep -m1 '"tag_name"' | cut -d\" -f4)
+        curl -fsSL "https://github.com/getsops/sops/releases/download/${V}/sops-${V}.linux.amd64" -o /tmp/sops
+        install -m 0755 /tmp/sops /usr/local/bin/sops
+        rm -f /tmp/sops
+      args:
+        creates: /usr/local/bin/sops
+
     # ----------------------------------------------------------------------
     # deploy user: the account GitHub Actions SSHes in as to run
     # scripts/deploy.sh. Created with a home, bash shell, docker group
