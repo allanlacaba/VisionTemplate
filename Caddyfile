@@ -1,0 +1,14 @@
+# Caddyfile — public TLS reverse proxy in front of the app.
+#
+# Caddy reads {$DOMAIN} from its environment (set in docker-compose.yml,
+# defaulting to visiontemplate.watchtoken.org). It automatically provisions
+# and renews a Let's Encrypt certificate for that domain as long as:
+#   1) the domain's A/AAAA record points at this host, AND
+#   2) ports 80 and 443 are reachable from the internet (HTTP-01 challenge).
+#
+# HTTP→HTTPS redirection is automatic; no extra block needed.
+
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}
