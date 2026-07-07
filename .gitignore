@@ -5,3 +5,10 @@
 # React Router
 /.react-router/
 /build/
+
+# Deploy state (lives on the VPS, not in git)
+.deploy-state
+deploy-failure-*.log
+
+# Real ansible inventory (has live host IPs). Keep inventory.example in git.
+ansible/inventory
