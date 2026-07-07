@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # scripts/deploy.sh
 #
-# Builds a new app image, brings it up, waits for the Docker healthcheck to go
-# healthy, and on failure automatically rolls back to the previously recorded
-# known-good image. The Postgres `db` service is never restarted here.
+# Pulls the prebuilt app image (built & pushed by .github/workflows/ci.yml),
+# brings it up, waits for the Docker healthcheck to go healthy, and on failure
+# automatically rolls back to the previously recorded known-good image (re-pulled
+# from the registry). The Postgres `db` service is never restarted here.
 #
-# Run on the VPS (invoked by .github/workflows/deploy.yml on every push):
-#     IMAGE_TAG=<optional> ./scripts/deploy.sh
+# Run on the VPS (invoked by ci.yml's deploy job on every push to main):
+#     IMAGE_TAG=<tag from CI> ./scripts/deploy.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,9 +42,9 @@ cya "Deploying app tag: $NEW_TAG   (previous: $PREV_TAG)"
 cya "Ensuring db service is up"
 "${COMPOSE[@]}" up -d --no-deps db
 
-# ---- 2. build the new image --------------------------------------------------
-cya "Building visiontemplate-app:$NEW_TAG"
-"${COMPOSE[@]}" build "$APP_SERVICE"
+# ---- 2. pull the prebuilt image for this tag --------------------------------
+cya "Pulling ${IMAGE:-ghcr.io/allanlacaba/visiontemplate}:$NEW_TAG"
+"${COMPOSE[@]}" pull "$APP_SERVICE"
 
 # ---- 3. launch new app container (db is left untouched) ----------------------
 cya "Starting app with the new image"
@@ -91,6 +92,7 @@ if [[ "$PREV_TAG" == "(none)" ]]; then
 fi
 
 cya "Rolling back to previous image: $PREV_TAG"
+IMAGE_TAG="$PREV_TAG" "${COMPOSE[@]}" pull "$APP_SERVICE"
 IMAGE_TAG="$PREV_TAG" "${COMPOSE[@]}" up -d --no-deps --force-recreate "$APP_SERVICE"
 
 RB_CONTAINER="$("${COMPOSE[@]}" ps -q "$APP_SERVICE")"

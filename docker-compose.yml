@@ -39,7 +39,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: visiontemplate-app:${IMAGE_TAG:-latest}
+    image: ${IMAGE:-ghcr.io/allanlacaba/visiontemplate}:${IMAGE_TAG:-latest}
     restart: unless-stopped
     depends_on:
       db:
