@@ -31,8 +31,10 @@ This guide sets up a Docker Compose stack on a Linux VPS that:
 ```bash
 git clone <your-repo-url> /srv/visiontemplate
 cd /srv/visiontemplate
-cp .env.example .env
-# Edit .env: set a strong POSTGRES_PASSWORD, matching DATABASE_URL, etc.
+# Non-sensitive config is committed as config.env.
+# Secrets (POSTGRES_PASSWORD, DATABASE_URL) are SOPS-encrypted in secrets.enc.env.
+# deploy.sh combines both → .env at deploy time. For a manual first run without
+# the age private key, compose defaults cover everything — the app starts fine.
 ```
 
 Bring the whole stack up the first time (this creates the Postgres data volume
@@ -130,7 +132,66 @@ So nothing reaches `main` (and thus deploys) without passing CI:
 
 With this on, deploys happen on **merge to main**, not direct push.
 
-## 5. Daily Postgres backups
+## 5. Secrets management (SOPS + age)
+
+`POSTGRES_PASSWORD` and `DATABASE_URL` are encrypted with
+[SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age).
+
+| File | In git? | Purpose |
+| --- | --- | --- |
+| `config.env` | committed plaintext | non-sensitive config |
+| `secrets.enc.env` | committed, **encrypted** | secret values (password, database URL) |
+| `.env` | gitignored, generated | union of the two, built by `deploy.sh` |
+| `keys/age.key` | gitignored, **VPS only** | age private key that decrypts the secrets |
+| `.sops.yaml` | committed | age public key for `secrets.enc.env` |
+
+On every deploy `scripts/deploy.sh` regenerates `.env`:
+```bash
+cat config.env > .env
+SOPS_AGE_KEY_FILE=keys/age.key sops -d secrets.enc.env >> .env
+```
+
+### Bootstrapping a new VPS
+
+Generate the age keypair once (do NOT commit `age.key`):
+
+```bash
+mkdir -p /srv/visiontemplate/keys && chmod 700 /srv/visiontemplate/keys
+age-keygen -o /srv/visiontemplate/keys/age.key 2>/dev/null
+chmod 600 /srv/visiontemplate/keys/age.key
+```
+
+Paste the public key (`age-keygen -y keys/age.key`) into `.sops.yaml` under the
+`path_regex: secrets\.enc\.env$` rule (replacing the existing recipient). Then
+create the encrypted secrets and rotate Postgres:
+
+```bash
+P=$(openssl rand -base64 24 | tr -d '/+\n')
+cat > /tmp/s.env <<EOSEC
+POSTGRES_PASSWORD=$P
+DATABASE_URL=postgresql://vision:$P@db:5432/vision_template
+EOSEC
+SOPS_AGE_KEY_FILE=keys/age.key sops --encrypt --input-type dotenv /tmp/s.env > secrets.enc.env
+rm -f /tmp/s.env
+docker compose exec -T db psql -U vision -d vision_template \
+  -c "ALTER USER vision PASSWORD '${P}';" < /dev/null
+docker compose up -d --no-deps --force-recreate app
+```
+
+### Editing secrets
+
+```bash
+sops secrets.enc.env            # opens $EDITOR; saves re-encrypted
+# or view only:
+SOPS_AGE_KEY_FILE=keys/age.key sops -d secrets.enc.env
+```
+
+### Installing sops + age (ansible)
+
+`ansible/install-docker.yml` now installs both (`age` from apt, `sops` latest
+binary from GitHub). Re-run the playbook against new VPS instances.
+
+## 6. Daily Postgres backups
 
 `.github/workflows/backup.yml` runs daily at **04:17 UTC** and calls
 `scripts/backup-db.sh`, which:
@@ -155,7 +216,7 @@ Or copy one off the server:
 docker compose cp db:/backups/vision_template-<ts>.sql.gz ./
 ```
 
-## 6. Useful commands on the VPS
+## 7. Useful commands on the VPS
 
 ```bash
 cd /srv/visiontemplate
@@ -177,17 +238,21 @@ docker compose logs -f db
 docker compose exec db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
 ```
 
-## 7. Variables
+## 8. Variables
 
-| Variable | Default | Used by |
+| Variable | Default | Notes |
 | --- | --- | --- |
-| `POSTGRES_USER` | `vision` | db container, `DATABASE_URL` |
-| `POSTGRES_PASSWORD` | `visionpass` | db container — **change this** |
-| `POSTGRES_DB` | `vision_template` | db container |
-| `DATABASE_URL` | `postgresql://vision:visionpass@db:5432/vision_template` | app |
-| `PORT` | `3000` | app (inside container) |
-| `APP_PORT` | `3000` | host port published |
-| `IMAGE` | `ghcr.io/allanlacaba/visiontemplate` | app image registry path |
+| `POSTGRES_USER` | `vision` | db container (`config.env`) |
+| `POSTGRES_DB` | `vision_template` | db container (`config.env`) |
+| `POSTGRES_PASSWORD` | *(encrypted)* | in `secrets.enc.env` — edit with `sops` |
+| `DATABASE_URL` | *(encrypted)* | in `secrets.enc.env` — edit with `sops` |
+| `PORT` | `3000` | app (inside container, `config.env`) |
+| `APP_PORT` | `3000` | host port published on `127.0.0.1` (`config.env`) |
+| `DOMAIN` | `visiontemplate.watchtoken.org` | Caddy hostname (`config.env`) |
+| `IMAGE` | `ghcr.io/allanlacaba/visiontemplate` | app image registry path (`config.env`) |
 | `IMAGE_TAG` | `<sha>` from CI | which tag `deploy.sh` pulls/runs |
 | `BACKUP_KEEP` | `14` | backup retention in days |
 | `HEALTH_TIMEOUT` | `90` | seconds before a deploy is considered failed |
+| `SOPS_AGE_KEY_FILE` | `keys/age.key` | age private key path (`deploy.sh`) |
+
+> `POSTGRES_PASSWORD` and `DATABASE_URL` are encrypted — see §5 (Secrets management).
