@@ -2,11 +2,7 @@ import type { Route } from "./+types/api.ping";
 
 // GET /api/ping — health check, proves the backend is answering
 export async function loader(_: Route.LoaderArgs) {
-  return Response.json({
-    pong: true,
-    serverTime: new Date().toISOString(),
-    uptimeSeconds: Math.round(process.uptime()),
-  });
+  return new Response("simulated deploy failure", { status: 500 });
 }
 
 // POST /api/ping — echoes back whatever { message } you send
