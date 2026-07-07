@@ -13,6 +13,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# ---- 0. regenerate .env from config + decrypted secrets -------------------
+# On the VPS (sops+age installed), config.env provides non-secret values and
+# secrets.enc.env is decrypted with the local age private key.  Locally
+# (no sops) config.env alone is enough — compose defaults fill the rest.
+AGE_KEY="${SOPS_AGE_KEY_FILE:-$ROOT_DIR/keys/age.key}"
+: > .env
+if command -v sops >/dev/null 2>&1 && [ -f secrets.enc.env ] && [ -f "$AGE_KEY" ]; then
+  cat config.env > .env
+  SOPS_AGE_KEY_FILE="$AGE_KEY" sops -d secrets.enc.env >> .env || {
+    echo "!! sops decrypt failed — check SOPS_AGE_KEY_FILE ($AGE_KEY)" >&2
+    exit 1
+  }
+elif [ -f config.env ]; then
+  cp config.env .env
+fi
+
 COMPOSE=(docker compose)
 APP_SERVICE="app"
 STATE_FILE=".deploy-state"          # holds the last known-good image tag
