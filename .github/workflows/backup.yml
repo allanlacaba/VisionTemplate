@@ -1,0 +1,30 @@
+name: Daily DB backup
+
+# Runs scripts/backup-db.sh on the VPS every day (pg_dump + gzip into the
+# db_backups volume, prune dumps older than BACKUP_KEEP days).
+#
+# Uses the same secrets as deploy.yml (SSH_HOST, SSH_USER, SSH_KEY, SSH_PORT,
+# DEPLOY_PATH). BACKUP_KEEP is read from the host's .env (default 14).
+
+on:
+  schedule:
+    # 04:17 UTC daily — a quiet, off-the-hour time to avoid cron congestion.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run pg_dump on the VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            bash ./scripts/backup-db.sh

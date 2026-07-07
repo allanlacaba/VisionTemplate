@@ -72,3 +72,14 @@ npm run start   # serve the production build
 ```
 
 A `Dockerfile` is included for container deploys (Railway, Fly.io, Cloud Run, etc.).
+
+### Self-host on a VPS (push-to-deploy + auto-rollback + daily DB backups)
+
+A `docker-compose.yml` stack (app + Postgres) plus two GitHub Actions workflows
+give you:
+
+- **Rebuild on every push** to `main` (SSH deploy),
+- **automatic rollback** to the previous image if the new build fails its health check,
+- **daily `pg_dump` backups** with retention.
+
+See **[DEPLOY.md](./DEPLOY.md)** for the full setup (VPS prep, secrets, restore).

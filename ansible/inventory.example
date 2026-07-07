@@ -1,0 +1,13 @@
+# ansible/inventory.example
+#
+# Copy to `inventory` and edit. Then run:
+#   ansible-playbook -i inventory install-docker.yml -K
+#
+# Tip: set these per-host, or move ansible_user / ansible_port under [vps:vars].
+
+[vps]
+# your-vps  ansible_host=203.0.113.10  ansible_user=deploy  ansible_port=22
+
+[vps:vars]
+# ansible_python_interpreter=/usr/bin/python3
+# host_key_checking=False

@@ -1,0 +1,229 @@
+---
+# ansible/install-docker.yml
+#
+# Installs Docker Engine + Compose v2 on Debian (tested on Trixie / Debian 13)
+# using Docker's official apt repository. Uses ONLY ansible.builtin modules,
+# so no collections need to be installed.
+#
+# Run from the ansible/ directory:
+#
+#   cp inventory.example inventory       # then edit: set host, ansible_user
+#   ansible-playbook -i inventory install-docker.yml -K
+#
+#   -K ( --ask-become-pass ) prompts for the remote user's sudo password.
+#   The SSH user (ansible_user) must have sudo rights on the host.
+#
+# After this runs, add that same user to `docker_users` below (default: deploy)
+# so the push-to-deploy workflow can run `docker compose` without sudo.
+
+- name: Install Docker Engine + Compose v2 on Debian
+  hosts: all
+  become: true
+
+  vars:
+    # Users added to the `docker` group so they can run docker without sudo.
+    # (The deploy_user below is already added to docker; list OTHERS here.)
+    docker_users: []
+
+    # Map ansible architecture to Debian dpkg arch for the apt source [arch=...].
+    docker_arch_map:
+      x86_64: amd64
+      aarch64: arm64
+      armv7l: armhf
+    docker_arch: "{{ docker_arch_map[ansible_facts['architecture']] | default('amd64') }}"
+    docker_apt_channel: stable
+
+    # ---- deploy user (the account GitHub Actions SSHes in as) ----
+    deploy_user: deploy
+    deploy_user_shell: /bin/bash
+    # Passwordless sudo so deploy can fix perms / restart services in scripts.
+    deploy_passwordless_sudo: true
+    # Absolute path the repo will be cloned to on the host (DEPLOY_PATH GitHub secret).
+    deploy_path: /srv/visiontemplate
+    # Grant deploy the same SSH keys that currently allow root access, so whoever
+    # can reach root can also reach deploy. Set false to manage keys manually.
+    copy_root_authorized_keys_to_deploy: true
+    # Extra SSH public-key strings to also authorize for deploy (e.g. the keypair
+    # whose private half you store as the GitHub SSH_KEY secret). Example:
+    #   - "ssh-ed25519 AAAA... github-actions-deploy"
+    deploy_extra_authorized_keys: []
+
+  pre_tasks:
+    - name: Verify this is a Debian host
+      ansible.builtin.assert:
+        that: ansible_facts['os_family'] == 'Debian'
+        fail_msg: >-
+          This playbook targets Debian (got
+          {{ ansible_facts['os_family'] | default('unknown') }} /
+          {{ ansible_facts['distribution_release'] | default('?') }}).
+
+    - name: Show detected release
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansible_facts['distribution'] }}
+          {{ ansible_facts['distribution_release'] }}
+          ({{ ansible_facts['architecture'] }} -> {{ docker_arch }})
+
+  tasks:
+    - name: Remove conflicting distro-shipped packages (per Docker docs)
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-doc
+          - docker-compose
+          - docker-compose-v2
+          - podman-docker
+          - containerd
+          - runc
+        state: absent
+        purge: true
+
+    - name: Install prerequisite packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+          - apt-transport-https
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker's GPG key (ASCII-armored)
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/debian/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+        force: true
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        # Uses the host's actual codename (e.g. "trixie"); stable channel.
+        repo: >-
+          deb [arch={{ docker_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/debian
+          {{ ansible_facts['distribution_release'] }}
+          {{ docker_apt_channel }}
+        filename: docker
+        state: present
+        update_cache: true
+
+    - name: Install Docker Engine, CLI, containerd, buildx, compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        update_cache: true
+
+    - name: Enable and start docker.service
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add users to the docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_users }}"
+
+    # ----------------------------------------------------------------------
+    # deploy user: the account GitHub Actions SSHes in as to run
+    # scripts/deploy.sh. Created with a home, bash shell, docker group
+    # membership, passwordless sudo, and an authorized_keys derived from
+    # root's so existing access transfers automatically.
+    # ----------------------------------------------------------------------
+    - name: Ensure deploy user exists (bash shell, home, in docker group)
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        shell: "{{ deploy_user_shell }}"
+        home: "/home/{{ deploy_user }}"
+        create_home: true
+        groups: docker
+        append: true
+
+    - name: Grant deploy passwordless sudo (validated with visudo)
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/{{ deploy_user }}"
+        content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -csf %s
+      when: deploy_passwordless_sudo | bool
+
+    - name: Create DEPLOY_PATH owned by deploy (where the repo will be cloned)
+      ansible.builtin.file:
+        path: "{{ deploy_path }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0755"
+
+    - name: Ensure deploy ~/.ssh exists with correct perms
+      ansible.builtin.file:
+        path: "/home/{{ deploy_user }}/.ssh"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0700"
+
+    - name: Check whether root has an authorized_keys file
+      ansible.builtin.stat:
+        path: /root/.ssh/authorized_keys
+      register: root_authkeys
+
+    - name: Copy root's authorized_keys to deploy (same SSH access as root)
+      ansible.builtin.copy:
+        remote_src: true
+        src: /root/.ssh/authorized_keys
+        dest: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0600"
+      when:
+        - copy_root_authorized_keys_to_deploy | bool
+        - root_authkeys.stat.exists | bool
+
+    - name: Add any extra authorized keys for deploy
+      ansible.builtin.lineinfile:
+        path: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+        line: "{{ item }}"
+        create: true
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0600"
+        state: present
+      loop: "{{ deploy_extra_authorized_keys }}"
+
+  post_tasks:
+    - name: Report installed versions
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - docker --version
+        - docker compose version
+      changed_when: false
+      register: docker_versions
+
+    - name: Show versions
+      ansible.builtin.debug:
+        msg: "{{ item.stdout }}"
+      loop: "{{ docker_versions.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Reminder to re-login for docker group to take effect
+      ansible.builtin.debug:
+        msg: >-
+          {{ deploy_user }}{% if docker_users | length > 0 %},
+          {{ docker_users | join(', ') }}{% endif %} must log out and back in
+          (or run `newgrp docker`) before running docker without sudo.
