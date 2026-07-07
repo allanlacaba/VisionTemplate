@@ -44,7 +44,22 @@ docker compose up -d --build
 docker compose logs -f app
 ```
 
-Visit `http://<vps-ip>:3000/api/ping` — you should see `{"pong":true,...}`.
+Visit `http://127.0.0.1:3000/api/ping` on the VPS — you should see `{"pong":true,...}`.
+
+### Public site (Caddy + automatic HTTPS)
+
+Caddy fronts the app on ports 80/443 and auto-provisions a Let's Encrypt cert for
+`DOMAIN` (default `visiontemplate.watchtoken.org`). The app itself is bound to
+`127.0.0.1` only, so Caddy is the sole public entry point. Before bringing Caddy
+up, make sure:
+
+1. **DNS** — an A record for `DOMAIN` points at the VPS IP, and
+2. **Ports** 80 and 443 are open on the VPS firewall (Caddy needs 80 for the
+   ACME HTTP-01 challenge and the HTTP→HTTPS redirect, 443 for HTTPS).
+
+Once DNS resolves, `docker compose up -d caddy` and visit
+`https://<DOMAIN>/api/ping`. If TLS provisioning fails, check DNS and firewall,
+then `docker compose logs -f caddy`.
 
 ## 2. Register the deploy secret on GitHub
 
@@ -141,7 +156,8 @@ docker compose exec db psql -U "$POSTGRES_USER" "$POSTGRES_DB"
 | `POSTGRES_DB` | `vision_template` | db container |
 | `DATABASE_URL` | `postgresql://vision:visionpass@db:5432/vision_template` | app |
 | `PORT` | `3000` | app (inside container) |
-| `APP_PORT` | `3000` | host port published |
+| `APP_PORT` | `3000` | host port published on `127.0.0.1` (behind Caddy) |
+| `DOMAIN` | `visiontemplate.watchtoken.org` | public hostname Caddy serves + TLS for |
 | `IMAGE_TAG` | `git-<sha>` | which image `deploy.sh` builds/runs |
 | `BACKUP_KEEP` | `14` | backup retention in days |
 | `HEALTH_TIMEOUT` | `90` | seconds before a deploy is considered failed |
