@@ -1,0 +1,30 @@
+name: Simulate bad deploy
+
+# Manual-only workflow. SSHs into the VPS and runs
+# scripts/simulate-bad-deploy.sh, which temporarily breaks the app's healthcheck
+# (without touching the production image or code), watches it go unhealthy, and
+# demonstrates the automatic rollback to the known-good tag in .deploy-state.
+#
+# Uses the same SSH secrets as ci.yml (SSH_HOST, SSH_USER, SSH_KEY, SSH_PORT,
+# DEPLOY_PATH). No per-deploy secrets needed — this is read-only aside from
+# recreating a container.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run simulation on the VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.DEPLOY_PATH }}"
+            bash ./scripts/simulate-bad-deploy.sh
