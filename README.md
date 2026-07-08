@@ -38,6 +38,17 @@ The app has a real server-side backend via React Router loaders/actions:
 | `POST /api/ping` | Echo: `{ "message": "..." }` → `{ "pong": true, "echo": "..." }`. |
 | `GET /api/advice` | Server-side fetch to the free adviceslip.com API. |
 
+## Limits & retention
+
+- **Rate limit** — `POST /api/notes` is capped at **20 creations per hour per
+  client IP** (keyed off `X-Forwarded-For`, then `X-Real-IP`). Over the limit it
+  returns `429` with a `Retry-After` header. The counter lives in the Node
+  process memory, so it is **not shared across multiple instances**.
+- **Cleanup** — a background job runs every **4 hours** and deletes any note
+  older than 4 hours, then re-seeds the two welcome notes. (The `db-demo` form is
+  not rate-limited; reads are not throttled.)
+
+
 ## Make it yours
 
 - **Name & description** — edit `SITE` in `app/config.ts` (drives the navbar, footer, and `<title>`).

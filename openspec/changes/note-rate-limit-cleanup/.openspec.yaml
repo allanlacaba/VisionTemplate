@@ -1,0 +1,7 @@
+change: note-rate-limit-cleanup
+title: Rate-limit note creation (JSON API) and add a 4-hour cleanup job
+status: proposed
+created_at: 2026-07-09
+spec:
+  - notes-api
+  - notes-retention
