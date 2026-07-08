@@ -22,7 +22,30 @@ export type Note = {
   seeded: boolean;
 };
 
+// Self-healing schema migration. The `notes.seeded` column was added in a later
+// schema version, but the Postgres init script (docker-entrypoint-initdb.d) only
+// runs on first DB init, so an existing database may not have the column yet.
+// Run this once per process, awaited before every query so the column is
+// guaranteed present. Idempotent (ADD COLUMN IF NOT EXISTS is a fast no-op when
+// the column already exists). On failure the cached promise is cleared so the
+// next call retries instead of being stuck rejected forever.
+let migratePromise: Promise<void> | null = null;
+function ensureMigrated(): Promise<void> {
+  if (!migratePromise) {
+    migratePromise = (async () => {
+      await pool.query(
+        "ALTER TABLE notes ADD COLUMN IF NOT EXISTS seeded BOOLEAN NOT NULL DEFAULT false",
+      );
+    })().catch((err: unknown) => {
+      migratePromise = null;
+      throw err;
+    });
+  }
+  return migratePromise;
+}
+
 export async function listNotes(): Promise<Note[]> {
+  await ensureMigrated();
   const { rows } = await pool.query<Note>(
     "SELECT id, title, content, created_at, seeded FROM notes ORDER BY created_at DESC, id DESC",
   );
@@ -30,6 +53,7 @@ export async function listNotes(): Promise<Note[]> {
 }
 
 export async function createNote(title: string, content: string): Promise<Note> {
+  await ensureMigrated();
   const { rows } = await pool.query<Note>(
     "INSERT INTO notes (title, content) VALUES ($1, $2) RETURNING id, title, content, created_at, seeded",
     [title, content],
@@ -38,10 +62,12 @@ export async function createNote(title: string, content: string): Promise<Note> 
 }
 
 export async function deleteNote(id: number): Promise<void> {
+  await ensureMigrated();
   await pool.query("DELETE FROM notes WHERE id = $1", [id]);
 }
 
 export async function deleteOldNotes(): Promise<void> {
+  await ensureMigrated();
   await pool.query(
     "DELETE FROM notes WHERE created_at < now() - interval '4 hours'",
   );
@@ -53,6 +79,7 @@ const SEED_NOTES: ReadonlyArray<readonly [string, string]> = [
 ];
 
 export async function ensureSeedNotes(): Promise<void> {
+  await ensureMigrated();
   for (const [title, content] of SEED_NOTES) {
     await pool.query(
       `INSERT INTO notes (title, content, seeded)
